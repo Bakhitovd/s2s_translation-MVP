@@ -18,7 +18,7 @@
 - Chrome cannot capture system audio directly; use loopback devices.
 
 ## Definition of Done (DoD)
-- `docker compose up` brings API on :8000 with GPU; `GET /` serves frontend.
+- uvicorn server.app:app --host 0.0.0.0 --port 8000 brings API on :8000 with GPU; `GET /` serves frontend.
 - Start/Stop works; speaking English returns Russian audio; speaking Russian returns English.
 - End-of-utterance handled (idle ~900ms or explicit flush); latency acceptable for demo.
 - No network calls to 3rd-party AI; models load locally; attribution noted in docs.
