@@ -2,7 +2,7 @@ fastapi==0.116.1
 uvicorn[standard]==0.35.0
 websockets==15.0.1
 soundfile==0.13.1
-
+sounddevice
 # Keep <2 due to NeMo ASR headaches with NumPy 2.x
 numpy==1.26.4
 scipy==1.14.1
