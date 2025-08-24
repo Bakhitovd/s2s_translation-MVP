@@ -361,7 +361,7 @@ def main():
     if args.tgt == "ru":
         tts.load("ru", "baya")
     else:
-        tts.load("en", None)
+        tts.load("en", 'malayalam_male')
 
     # VAD/Segmenter
     seg = EnergyVADSegmenter(

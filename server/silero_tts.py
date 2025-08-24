@@ -19,12 +19,15 @@ class TTSManager:
         self.sample_rate = sample_rate
         self.device = device
 
-    def load(self, lang: str, speaker: Optional[str] = None) -> SileroTTS:
-        # Defaults that don't explode:
-        # - RU: common multi-speaker voices -> pick "baya"
-        # - EN: v3_en single-speaker -> pass None
-        if speaker is None:
-            speaker = "baya" if lang == "ru" else None
+    def load(self, lang: str) -> SileroTTS:
+
+
+        if lang == "ru":
+            model_id = "v4_ru"
+            speaker = "aidar"
+        else:
+            model_id = "v3_en"
+            speaker = "en_0"
 
         key = (lang, speaker)
         if key in self._cache:
@@ -35,7 +38,7 @@ class TTSManager:
         tts = SileroTTS(
             model_id=model_id,
             language=lang,
-            speaker=speaker,              # None is valid for single-speaker EN
+            speaker="random",              # None is valid for single-speaker EN
             sample_rate=self.sample_rate,
             device=self.device,
         )
@@ -44,7 +47,7 @@ class TTSManager:
         return tts
 
     def synth(self, text: str, lang: str, speaker: Optional[str] = None) -> Tuple[int, np.ndarray]:
-        tts = self.load(lang, speaker)
+        tts = self.load(lang)
         with tempfile.TemporaryDirectory() as td:
             out = Path(td) / "out.wav"
             tts.tts(text, str(out))

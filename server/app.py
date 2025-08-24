@@ -248,8 +248,8 @@ except Exception as e:
 try:
     logger.info("Loading Silero TTS models...")
     # Preload the exact speakers you use at runtime
-    tts_manager.load("ru", "baya")
-    tts_manager.load("en", None)  # v3_en
+    tts_manager.load("ru")
+    tts_manager.load("en")  # v3_en
 
     logger.info("Silero TTS models loaded successfully")
 except Exception as e:
