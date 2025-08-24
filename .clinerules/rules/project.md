@@ -12,7 +12,7 @@
 
 ## Tech Choices (LOCKED)
 - AST: NeMo `ASRModel.from_pretrained("nvidia/canary-1b-v2")`, 16 kHz mono input.
-- TTS: Silero via `torch.hub.load('snakers4/silero-models','silero_tts', ...)`.
+- TTS: Silero via `from silero_tts.silero_tts import SileroTTS`.
 - Audio in browser: 48 kHz float → int16 frames → WS, server downsample to 16 kHz.
 - WS protocol: binary = PCM/WAV, text = JSON control/status.
 - Chrome cannot capture system audio directly; use loopback devices.

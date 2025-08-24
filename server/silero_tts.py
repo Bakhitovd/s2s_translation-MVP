@@ -18,6 +18,7 @@ class TTSManager:
         self.device = device
 
     def load(self, lang: str, speaker: Optional[str] = None) -> SileroTTS:
+        speaker = "baya" if lang == "ru" else None
         key = (lang, speaker)
         if key in self.models:
             return self.models[key]
