@@ -34,11 +34,11 @@ class TTSManager:
             return self._cache[key]
 
         t0 = time.time()
-        model_id = SileroTTS.get_latest_model(lang)  # keep it simple
+        # model_id = SileroTTS.get_latest_model(lang)  # keep it simple
         tts = SileroTTS(
             model_id=model_id,
             language=lang,
-            speaker="random",              # None is valid for single-speaker EN
+            speaker=speaker,              # None is valid for single-speaker EN
             sample_rate=self.sample_rate,
             device=self.device,
         )

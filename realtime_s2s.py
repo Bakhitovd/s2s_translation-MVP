@@ -339,7 +339,7 @@ def main():
     ap.add_argument("--out-dev", type=int, default=None, help="Output device index (sounddevice)")
     ap.add_argument("--in-ch", type=int, default=1, help="Mic channels (1 or 2)")
     ap.add_argument("--log", default="INFO")
-    ap.add_argument("--threshold-db", type=float, default=-42.0, help="VAD threshold dBFS (higher = less sensitive)")
+    ap.add_argument("--threshold-db", type=float, default=-32.0, help="VAD threshold dBFS (higher = less sensitive)")
     ap.add_argument("--min-ms", type=int, default=600)
     ap.add_argument("--max-ms", type=int, default=2000)
     ap.add_argument("--silence-ms", type=int, default=220)
@@ -359,9 +359,9 @@ def main():
 
     tts = TTSManager(device=args.device)
     if args.tgt == "ru":
-        tts.load("ru", "baya")
+        tts.load("ru")
     else:
-        tts.load("en", 'malayalam_male')
+        tts.load("en")
 
     # VAD/Segmenter
     seg = EnergyVADSegmenter(
