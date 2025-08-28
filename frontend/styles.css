@@ -1,0 +1,33 @@
+body {
+  font-family: Arial, sans-serif;
+  margin: 20px;
+  background: #111;
+  color: #e7e7e7;
+}
+
+h1 { font-size: 1.5em; margin-bottom: 10px; }
+
+#controls { margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+
+#controls select,
+#controls button {
+  padding: 6px 10px;
+  background: #1e1e1e;
+  color: #e7e7e7;
+  border: 1px solid #333;
+  border-radius: 6px;
+}
+
+#controls button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.meter { margin: 8px 0 14px; background: #1a1a1a; padding: 6px; border-radius: 8px; }
+#vuCanvas { display: block; width: 240px; height: 20px; background: #222; border-radius: 4px; }
+
+#transcripts {
+  border: 1px solid #333;
+  padding: 10px;
+  background: #0f0f0f;
+  max-height: 240px;
+  overflow-y: auto;
+  border-radius: 8px;
+}

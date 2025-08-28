@@ -1,108 +1,262 @@
+// /static/app.js
+'use strict';
+
 let ws;
 let audioContext;
-let processor;
-let source;
-let stream;
+let workletNode;
+let sourceNode;
+let analyser;
+let rafId;
+let destNode;           // for routing playback to an <audio> element (so setSinkId works)
+let playbackEl;
+let micSelect, speakerSelect, langSelect, startBtn, stopBtn, transcriptsDiv, vuCanvas, vuCtx;
 
-const logDiv = document.getElementById("log");
-const player = document.getElementById("player");
-const inputSelect = document.getElementById("inputSelect");
-const outputSelect = document.getElementById("outputSelect");
+const WS_URL = `ws://${location.host}/ws/audio`;
 
-// Populate device lists
-async function populateDevices() {
+function uiSetRunning(running) {
+  startBtn.disabled = running;
+  stopBtn.disabled = !running;
+  micSelect.disabled = running;
+  langSelect.disabled = running;
+}
+
+async function ensureAudioPermission() {
+  // Ask once so enumerateDevices returns labels
+  const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
+  tmp.getTracks().forEach(t => t.stop());
+}
+
+async function listDevices() {
   const devices = await navigator.mediaDevices.enumerateDevices();
-  inputSelect.innerHTML = "";
-  outputSelect.innerHTML = "";
-  devices.forEach((d) => {
-    if (d.kind === "audioinput") {
-      const opt = document.createElement("option");
-      opt.value = d.deviceId;
-      opt.textContent = d.label || `Input ${inputSelect.length + 1}`;
-      inputSelect.appendChild(opt);
-    } else if (d.kind === "audiooutput") {
-      const opt = document.createElement("option");
-      opt.value = d.deviceId;
-      opt.textContent = d.label || `Output ${outputSelect.length + 1}`;
-      outputSelect.appendChild(opt);
-    }
+  const mics = devices.filter(d => d.kind === 'audioinput');
+  const outs = devices.filter(d => d.kind === 'audiooutput');
+
+  // Mic select
+  micSelect.innerHTML = '';
+  mics.forEach(d => {
+    const opt = document.createElement('option');
+    opt.value = d.deviceId;
+    opt.textContent = d.label || `Mic ${micSelect.length + 1}`;
+    micSelect.appendChild(opt);
+  });
+
+  // Speaker select
+  speakerSelect.innerHTML = '';
+  outs.forEach(d => {
+    const opt = document.createElement('option');
+    opt.value = d.deviceId;
+    opt.textContent = d.label || `Output ${speakerSelect.length + 1}`;
+    speakerSelect.appendChild(opt);
   });
 }
-navigator.mediaDevices.addEventListener("devicechange", populateDevices);
-populateDevices();
 
-function log(msg) {
-  const p = document.createElement("p");
-  p.textContent = msg;
-  logDiv.appendChild(p);
+function parseLangPair() {
+  const pair = langSelect.value; // e.g. "ru-en" | "en-ru"
+  const [src, tgt] = pair.split('-');
+  return { src, tgt, pair };
 }
 
-document.getElementById("startBtn").onclick = async () => {
-  const mode = document.getElementById("modeSelect").value;
-  ws = new WebSocket(`ws://${location.host}/ws/translate`);
-  ws.binaryType = "arraybuffer";
+async function initAudio() {
+  audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+  await audioContext.audioWorklet.addModule('/static/worklets/encoder.worklet.js');
 
-  ws.onopen = () => {
-    ws.send(JSON.stringify({ mode }));
-    log("WebSocket opened");
-  };
-
-  ws.onmessage = (event) => {
-    if (typeof event.data === "string") {
-      log("JSON: " + event.data);
-    } else {
-      const blob = new Blob([event.data], { type: "audio/wav" });
-      player.src = URL.createObjectURL(blob);
-      if (outputSelect.value && typeof player.setSinkId === "function") {
-        player.setSinkId(outputSelect.value).then(() => {
-          player.play();
-        }).catch((err) => {
-          log("Error setting output device: " + err);
-          player.play();
-        });
-      } else {
-        player.play();
-      }
+  const constraints = {
+    audio: {
+      deviceId: micSelect.value ? { exact: micSelect.value } : undefined,
+      channelCount: 1,
+      sampleRate: 48000,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true
     }
   };
+  const stream = await navigator.mediaDevices.getUserMedia(constraints);
 
-  const constraints = { audio: { deviceId: inputSelect.value ? { exact: inputSelect.value } : undefined } };
-  stream = await navigator.mediaDevices.getUserMedia(constraints);
-  audioContext = new AudioContext({ sampleRate: 48000 });
-  source = audioContext.createMediaStreamSource(stream);
+  sourceNode = audioContext.createMediaStreamSource(stream);
 
-  processor = audioContext.createScriptProcessor(4096, 1, 1);
-  source.connect(processor);
-  processor.connect(audioContext.destination);
+  // Encoder worklet (do NOT connect to destination → avoids echo)
+  workletNode = new AudioWorkletNode(audioContext, 'encoder-worklet');
+  sourceNode.connect(workletNode);
 
-  processor.onaudioprocess = (e) => {
-    const input = e.inputBuffer.getChannelData(0);
-    const int16 = new Int16Array(input.length);
-    for (let i = 0; i < input.length; i++) {
-      int16[i] = Math.max(-1, Math.min(1, input[i])) * 0x7fff;
-    }
-    ws.send(int16.buffer);
+  // VU meter tap
+  analyser = audioContext.createAnalyser();
+  analyser.fftSize = 2048;
+  sourceNode.connect(analyser);
+  drawVu();
+
+  // Route playback through a MediaStreamDestination so we can pick output device via <audio>
+  destNode = audioContext.createMediaStreamDestination();
+  playbackEl.srcObject = destNode.stream;
+
+  // Wire encoder → WS
+  workletNode.port.onmessage = (evt) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const payload = evt.data instanceof Float32Array || evt.data instanceof Int16Array
+      ? evt.data.buffer
+      : evt.data;
+    ws.send(payload);
   };
-};
+}
 
-document.getElementById("stopBtn").onclick = () => {
-  if (processor) {
-    processor.disconnect();
-    source.disconnect();
-    processor = null;
-  }
-  if (ws) {
-    ws.send("__flush__");
-    log("Sent __flush__, waiting for server response...");
-    // Do not close immediately; wait for server to send audio
-  }
+function stopAudio() {
+  try { cancelAnimationFrame(rafId); } catch {}
+  try { analyser?.disconnect(); } catch {}
+  try { sourceNode?.disconnect(); } catch {}
+  try { workletNode?.disconnect(); } catch {}
+  try { destNode?.disconnect(); } catch {}
   if (audioContext) {
+    // Stop all tracks
+    const tracks = audioContext?.destination?.stream?.getTracks?.() || [];
+    tracks.forEach(t => t.stop());
     audioContext.close();
-    audioContext = null;
   }
-  if (stream) {
-    stream.getTracks().forEach((t) => t.stop());
-    stream = null;
+  analyser = sourceNode = workletNode = destNode = audioContext = null;
+}
+
+function connectWS() {
+  return new Promise((resolve, reject) => {
+    ws = new WebSocket(WS_URL);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+      const { src, tgt, pair } = parseLangPair();
+      ws.send(JSON.stringify({ type: 'start', src, tgt, pair }));
+      resolve();
+    };
+
+    ws.onmessage = (event) => {
+      if (typeof event.data === 'string') {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'transcript') {
+            const p = document.createElement('p');
+            p.textContent = msg.text;
+            transcriptsDiv.appendChild(p);
+            transcriptsDiv.scrollTop = transcriptsDiv.scrollHeight;
+          }
+        } catch { /* ignore */ }
+      } else {
+        // Expect 16k mono PCM int16 from server; play it
+        playPcmInt16Mono16k(event.data);
+      }
+    };
+
+    ws.onclose = () => {
+      // no-op; UI controls handle state
+      ws = null;
+    };
+
+    ws.onerror = (e) => {
+      reject(e);
+    };
+  });
+}
+
+function closeWS() {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    try { ws.close(1000, 'client-stop'); } catch {}
   }
-  log("Stopped (WS still open until audio received)");
-};
+  ws = null;
+}
+
+function playPcmInt16Mono16k(ab) {
+  if (!audioContext) return;
+  const i16 = new Int16Array(ab);
+  const f32 = new Float32Array(i16.length);
+  for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
+
+  // Create a buffer tagged as 16k; browser will resample into context's rate
+  const buffer = audioContext.createBuffer(1, f32.length, 16000);
+  buffer.copyToChannel(f32, 0);
+  const src = audioContext.createBufferSource();
+  src.buffer = buffer;
+
+  // Route to selectable output
+  src.connect(destNode);
+  src.start();
+}
+
+function drawVu() {
+  const w = vuCanvas.width, h = vuCanvas.height;
+  const data = new Uint8Array(analyser.fftSize);
+  const draw = () => {
+    analyser.getByteTimeDomainData(data);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) {
+      const v = (data[i] - 128) / 128.0;
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / data.length); // 0..~1
+    const pct = Math.min(1, rms * 2.5);
+
+    vuCtx.clearRect(0, 0, w, h);
+    vuCtx.fillStyle = '#4caf50';
+    vuCtx.fillRect(0, 0, Math.floor(pct * w), h);
+
+    rafId = requestAnimationFrame(draw);
+  };
+  draw();
+}
+
+async function applyOutputDevice() {
+  if (!('setSinkId' in HTMLMediaElement.prototype)) return;
+  if (!speakerSelect.value) return;
+  try {
+    await playbackEl.setSinkId(speakerSelect.value);
+  } catch (e) {
+    console.warn('setSinkId failed or not allowed:', e);
+  }
+}
+
+async function start() {
+  uiSetRunning(true);
+  transcriptsDiv.textContent = '';
+  await initAudio();
+  await connectWS();
+  await applyOutputDevice();
+}
+
+function stop() {
+  closeWS();
+  stopAudio();
+  uiSetRunning(false);
+}
+
+async function onMicChange() {
+  const running = !!audioContext;
+  if (running) {
+    // Re-init audio path with new device; keep the same WS session
+    stopAudio();
+    await initAudio();
+  }
+}
+
+async function onSpeakerChange() {
+  await applyOutputDevice();
+}
+
+window.addEventListener('DOMContentLoaded', async () => {
+  // Grab elements
+  transcriptsDiv = document.getElementById('transcripts');
+  micSelect = document.getElementById('micSelect');
+  speakerSelect = document.getElementById('speakerSelect');
+  langSelect = document.getElementById('langSelect');
+  startBtn = document.getElementById('startBtn');
+  stopBtn = document.getElementById('stopBtn');
+  playbackEl = document.getElementById('playback');
+  vuCanvas = document.getElementById('vuCanvas');
+  vuCtx = vuCanvas.getContext('2d');
+
+  // Permissions + devices
+  await ensureAudioPermission();
+  await listDevices();
+
+  // Handlers
+  startBtn.onclick = start;
+  stopBtn.onclick = stop;
+  micSelect.onchange = onMicChange;
+  speakerSelect.onchange = onSpeakerChange;
+
+  // Clean shutdown on page exit
+  window.addEventListener('beforeunload', stop);
+});

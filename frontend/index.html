@@ -1,28 +1,33 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Speech↔Speech MVP</title>
+  <meta charset="UTF-8" />
+  <title>Speech ↔ Speech MVP</title>
+  <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
-  <h1>Speech↔Speech MVP</h1>
-  <button id="startBtn">Start</button>
-  <button id="stopBtn">Stop</button>
-  <br><br>
-  <label for="modeSelect">Mode:</label>
-  <select id="modeSelect">
-    <option value="en->ru">English → Russian</option>
-    <option value="ru->en">Russian → English</option>
-    <option value="auto">Auto</option>
-  </select>
-  <br><br>
-  <label for="inputSelect">Input Device:</label>
-  <select id="inputSelect"></select>
-  <br><br>
-  <label for="outputSelect">Output Device:</label>
-  <select id="outputSelect"></select>
-  <div id="log"></div>
-  <audio id="player" controls></audio>
+  <h1>Real-Time EN↔RU Speech Translation</h1>
+
+  <div id="controls">
+    <button id="startBtn">Start</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <select id="micSelect" title="Microphone"></select>
+    <select id="speakerSelect" title="Output device"></select>
+    <select id="langSelect" title="Direction">
+      <option value="ru-en">RU → EN</option>
+      <option value="en-ru">EN → RU</option>
+    </select>
+  </div>
+
+  <div class="meter">
+    <canvas id="vuCanvas" width="240" height="20"></canvas>
+  </div>
+
+  <div id="transcripts"></div>
+
+  <!-- routed playback; allows setSinkId -->
+  <audio id="playback" hidden autoplay></audio>
+
   <script src="/static/app.js"></script>
 </body>
 </html>

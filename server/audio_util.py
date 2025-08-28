@@ -52,6 +52,27 @@ def wav_bytes_from_float32(audio_np: np.ndarray, sr: int) -> bytes:
     return buf.getvalue()
 
 
+def resample_float32(audio: np.ndarray, from_sr: int, to_sr: int) -> np.ndarray:
+    """
+    Resample a float32 numpy array from from_sr to to_sr.
+    """
+    if from_sr == to_sr:
+        return audio.astype(np.float32)
+    gcd = np.gcd(from_sr, to_sr)
+    up = to_sr // gcd
+    down = from_sr // gcd
+    return resample_poly(audio, up, down).astype(np.float32)
+
+
+def float32_to_int16le_bytes(f32: np.ndarray) -> bytes:
+    """
+    Convert float32 numpy array (-1.0 to 1.0) to raw Int16LE PCM bytes.
+    """
+    audio_clipped = np.clip(f32, -1.0, 1.0)
+    audio_int16 = (audio_clipped * 32767.0).astype(np.int16)
+    return audio_int16.tobytes()
+
+
 class AudioBuffer:
     """
     Small utility around bytearray for clearer semantics and testing.
