@@ -10,6 +10,7 @@ let rafId;
 let destNode;           // for routing playback to an <audio> element (so setSinkId works)
 let playbackEl;
 let micSelect, speakerSelect, langSelect, startBtn, stopBtn, transcriptsDiv, vuCanvas, vuCtx;
+let sampleRateSelect, noiseSuppressionCheckbox, chunkSizeSelect, echoCancellationCheckbox, autoGainCheckbox;
 
 const WS_URL = `ws://${location.host}/ws/audio`;
 
@@ -57,17 +58,24 @@ function parseLangPair() {
 }
 
 async function initAudio() {
-  audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+  // Get selected parameters from UI
+  const selectedSampleRate = parseInt(sampleRateSelect.value, 10) || 48000;
+  const noiseSuppressionEnabled = !!noiseSuppressionCheckbox.checked;
+  const echoCancellationEnabled = !!echoCancellationCheckbox.checked;
+  const autoGainEnabled = !!autoGainCheckbox.checked;
+  const selectedChunkMs = parseInt(chunkSizeSelect.value, 10) || 20;
+
+  audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: selectedSampleRate });
   await audioContext.audioWorklet.addModule('/static/worklets/encoder.worklet.js');
 
   const constraints = {
     audio: {
       deviceId: micSelect.value ? { exact: micSelect.value } : undefined,
       channelCount: 1,
-      sampleRate: 48000,
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true
+      sampleRate: selectedSampleRate,
+      echoCancellation: echoCancellationEnabled,
+      noiseSuppression: noiseSuppressionEnabled,
+      autoGainControl: autoGainEnabled
     }
   };
   const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -75,7 +83,9 @@ async function initAudio() {
   sourceNode = audioContext.createMediaStreamSource(stream);
 
   // Encoder worklet (do NOT connect to destination → avoids echo)
-  workletNode = new AudioWorkletNode(audioContext, 'encoder-worklet');
+  workletNode = new AudioWorkletNode(audioContext, 'encoder-worklet', {
+    processorOptions: { chunkMs: selectedChunkMs, gateThreshold: 0.02, hangoverMs: 300 }
+  });
   sourceNode.connect(workletNode);
 
   // VU meter tap
@@ -91,9 +101,16 @@ async function initAudio() {
   // Wire encoder → WS
   workletNode.port.onmessage = (evt) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const payload = evt.data instanceof Float32Array || evt.data instanceof Int16Array
-      ? evt.data.buffer
-      : evt.data;
+    const data = evt.data;
+    if (data && data.type === 'flush') {
+      ws.send(JSON.stringify({ type: 'flush' }));
+      return;
+    }
+    const payload = (data instanceof ArrayBuffer)
+      ? data
+      : (data instanceof Float32Array || data instanceof Int16Array)
+        ? data.buffer
+        : data;
     ws.send(payload);
   };
 }
@@ -246,6 +263,11 @@ window.addEventListener('DOMContentLoaded', async () => {
   playbackEl = document.getElementById('playback');
   vuCanvas = document.getElementById('vuCanvas');
   vuCtx = vuCanvas.getContext('2d');
+  sampleRateSelect = document.getElementById('sampleRateSelect');
+  noiseSuppressionCheckbox = document.getElementById('noiseSuppressionCheckbox');
+  echoCancellationCheckbox = document.getElementById('echoCancellationCheckbox');
+  autoGainCheckbox = document.getElementById('autoGainCheckbox');
+  chunkSizeSelect = document.getElementById('chunkSizeSelect');
 
   // Permissions + devices
   await ensureAudioPermission();

@@ -15,6 +15,8 @@ app = FastAPI()
 
 # Canary AST model manager (lazy global)
 canary_mgr = None
+# Silero TTS manager (lazy global)
+tts_mgr = None
 
 frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend")
 
@@ -36,13 +38,68 @@ async def websocket_audio_endpoint(websocket: WebSocket):
     await websocket.accept()
     log.info("WebSocket connection opened: %s", websocket.client)
     config = None
-    pcm_buffer = bytearray()
+    utter_buf = bytearray()
     total_bytes = 0
+    last_text = ""
     try:
-        SEGMENT_MS = 1000  # 1 second segments for demo
         SAMPLE_RATE = 16000
         BYTES_PER_SAMPLE = 2  # Int16LE
-        SEGMENT_SIZE = SAMPLE_RATE * BYTES_PER_SAMPLE * SEGMENT_MS // 1000
+        MAX_UTTER_SEC = 8
+        MAX_UTTER_BYTES = SAMPLE_RATE * BYTES_PER_SAMPLE * MAX_UTTER_SEC
+
+        async def process_and_respond(pcm_bytes: bytes):
+            # Convert Int16LE PCM to float32 [-1,1]
+            audio_np = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            # Lazy-load Canary AST
+            global canary_mgr
+            if canary_mgr is None:
+                from server.canary_ast import ModelManager
+                canary_mgr = ModelManager()
+                canary_mgr.load()
+                log.info("Canary AST model loaded")
+            src_lang = config.get("srcLang", "ru") if config else "ru"
+            tgt_lang = config.get("dstLang", "en") if config else "en"
+            log.info("Calling Canary AST: src=%s tgt=%s audio=%.2fs", src_lang, tgt_lang, len(audio_np)/SAMPLE_RATE)
+            result = canary_mgr.translate(audio_np, src_lang, tgt_lang)
+            text = (result.text or "").strip()
+            log.info("Canary AST result: %r", text)
+            # Duplicate/short-text suppression
+            def _norm_words(s: str):
+                return [w for w in "".join(ch.lower() if ch.isalnum() or ch.isspace() else " " for ch in s).split() if w]
+            nw = _norm_words(text)
+            suppressed = False
+            if len("".join(nw)) < 4:
+                suppressed = True
+            else:
+                stoplist = {"yes","yeah","ok","okay","uh","mmm","thanks","thank","thankyou","да","угу","спасибо"}
+                if " ".join(nw) in stoplist:
+                    suppressed = True
+                else:
+                    prev = _norm_words(last_text)
+                    if prev:
+                        inter = len(set(nw) & set(prev))
+                        union = len(set(nw) | set(prev))
+                        sim = inter / union if union else 0.0
+                        if sim >= 0.9:
+                            suppressed = True
+            # Send transcript (with filtered flag)
+            await websocket.send_text(json.dumps({"type": "transcript", "text": text, "filtered": suppressed}))
+            if suppressed:
+                return text
+            # Run Silero TTS
+            global tts_mgr
+            if "tts_mgr" not in globals() or tts_mgr is None:
+                from server.silero_tts import TTSManager
+                tts_mgr = TTSManager(sample_rate=24000, device="cpu")
+                log.info("Silero TTS manager loaded")
+            tts_sr, tts_audio = tts_mgr.synth(text, tgt_lang)
+            # Resample to 16kHz mono float32
+            tts_audio_16k = resample_float32(tts_audio, tts_sr, SAMPLE_RATE)
+            # Convert to Int16LE PCM
+            tts_pcm = float32_to_int16le_bytes(tts_audio_16k)
+            log.info("Sending TTS audio: %d bytes (%.2fs)", len(tts_pcm), len(tts_audio_16k)/SAMPLE_RATE)
+            await websocket.send_bytes(tts_pcm)
+            return text
 
         while True:
             try:
@@ -52,48 +109,15 @@ async def websocket_audio_endpoint(websocket: WebSocket):
                 break
             if "bytes" in msg:
                 chunk = msg["bytes"]
-                pcm_buffer.extend(chunk)
+                utter_buf.extend(chunk)
                 total_bytes += len(chunk)
                 log.debug("Received PCM chunk: %d bytes (total: %d)", len(chunk), total_bytes)
-                # Segment by fixed size (1s for demo)
-                while len(pcm_buffer) >= SEGMENT_SIZE:
-                    segment = pcm_buffer[:SEGMENT_SIZE]
-                    del pcm_buffer[:SEGMENT_SIZE]
-                    log.info("Segment ready: %d bytes (%.2fs)", len(segment), len(segment) / (SAMPLE_RATE * BYTES_PER_SAMPLE))
-                    # Convert Int16LE PCM to float32 [-1,1]
-                    audio_np = np.frombuffer(segment, dtype=np.int16).astype(np.float32) / 32768.0
-                    # Lazy-load Canary AST
-                    global canary_mgr
-                    if canary_mgr is None:
-                        from server.canary_ast import ModelManager
-                        canary_mgr = ModelManager()
-                        canary_mgr.load()
-                        log.info("Canary AST model loaded")
-                    src_lang = config.get("srcLang", "ru") if config else "ru"
-                    tgt_lang = config.get("dstLang", "en") if config else "en"
-                    log.info("Calling Canary AST: src=%s tgt=%s audio=%.2fs", src_lang, tgt_lang, len(audio_np)/SAMPLE_RATE)
-                    result = canary_mgr.translate(audio_np, src_lang, tgt_lang)
-                    log.info("Canary AST result: %r", result.text)
-                    # Run Silero TTS
-                    global tts_mgr
-                    if "tts_mgr" not in globals() or tts_mgr is None:
-                        from server.silero_tts import TTSManager
-                        tts_mgr = TTSManager(sample_rate=24000, device="cpu")
-                        log.info("Silero TTS manager loaded")
-                    tts_lang = tgt_lang
-                    tts_text = result.text
-                    log.info("Calling Silero TTS: lang=%s text=%r", tts_lang, tts_text)
-                    tts_sr, tts_audio = tts_mgr.synth(tts_text, tts_lang)
-                    log.info("Silero TTS result: %d samples @ %d Hz", len(tts_audio), tts_sr)
-                    # Resample to 16kHz mono float32
-                    tts_audio_16k = resample_float32(tts_audio, tts_sr, SAMPLE_RATE)
-                    # Convert to Int16LE PCM
-                    tts_pcm = float32_to_int16le_bytes(tts_audio_16k)
-                    log.info("Sending TTS audio: %d bytes (%.2fs)", len(tts_pcm), len(tts_audio_16k)/SAMPLE_RATE)
-                    await websocket.send_bytes(tts_pcm)
-                    # Also send transcript JSON
-                    await websocket.send_text(json.dumps({"type": "transcript", "text": tts_text}))
-                    log.info("Sent transcript JSON: %r", tts_text)
+                # Fallback: process if utterance grows too large
+                if len(utter_buf) >= MAX_UTTER_BYTES:
+                    log.info("Max utterance reached: %d bytes, processing", len(utter_buf))
+                    text_out = await process_and_respond(bytes(utter_buf))
+                    last_text = text_out
+                    utter_buf.clear()
             elif "text" in msg:
                 try:
                     ctrl = json.loads(msg["text"])
@@ -102,7 +126,15 @@ async def websocket_audio_endpoint(websocket: WebSocket):
                         config = ctrl
                         log.info("Session config: %s", config)
                         await websocket.send_text(json.dumps({"type": "ack", "config": config}))
-                    # Handle other control types: pause, resume, flush, etc.
+                    elif ctrl.get("type") == "flush":
+                        if len(utter_buf) > 0:
+                            log.info("Flush received: processing %d bytes", len(utter_buf))
+                            text_out = await process_and_respond(bytes(utter_buf))
+                            last_text = text_out
+                            utter_buf.clear()
+                        else:
+                            log.info("Flush received with empty buffer; ignoring")
+                    # Handle other control types: pause, resume, etc.
                 except Exception as e:
                     log.error("Error parsing control message: %s", e)
                     await websocket.send_text(json.dumps({"type": "error", "error": str(e)}))
