@@ -1,18 +1,30 @@
+# --- API stack ---
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
 websockets==15.0.1
+python-multipart==0.0.20   # REQUIRED for FastAPI file uploads (UploadFile/form-data)
+
+# --- Audio I/O & utils ---
 soundfile==0.13.1
 sounddevice
 pydub==0.25.1
-# Keep <2 due to NeMo ASR headaches with NumPy 2.x
+
+# --- NumPy/SciPy (keep <2 due to NeMo ASR constraints) ---
 numpy<2
 scipy==1.14.1
 
-# Torch stays in Dockerfile; ensure versions match:
-# e.g., torch==2.3.1+cu121  ↔  torchaudio==2.3.1
+# --- PyTorch audio bindings (pair with torch 2.3.1 CUDA 12.1 in Dockerfile) ---
 torchaudio==2.3.1
+# torch==2.3.1 will be installed in Dockerfile (CUDA 12.1 wheel):
+#   pip install torch==2.3.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+
+# --- TTS ---
 silero-tts
 
-nemo_toolkit[asr]==2.4.0
+# --- NeMo (ASR) ---
+nemo_toolkit[asr]==2.4.0   # NeMo ASR; requires Python ≥3.10 & Torch ≥2.0; keep NumPy <2
+# Ref: NeMo install & prerequisites docs
+
+# --- Tests ---
 pytest==8.4.1
 pytest-asyncio==1.1.0
