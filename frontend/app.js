@@ -84,7 +84,7 @@ async function initAudio() {
 
   // Encoder worklet (do NOT connect to destination → avoids echo)
   workletNode = new AudioWorkletNode(audioContext, 'encoder-worklet', {
-    processorOptions: { chunkMs: selectedChunkMs, gateThreshold: 0.02, hangoverMs: 300 }
+    processorOptions: { chunkMs: selectedChunkMs, gateThreshold: 0.02, hangoverMs: 500 }
   });
   sourceNode.connect(workletNode);
 
