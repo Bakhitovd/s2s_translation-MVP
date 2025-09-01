@@ -7,24 +7,32 @@ let workletNode;
 let sourceNode;
 let analyser;
 let rafId;
-let destNode;           // for routing playback to an <audio> element (so setSinkId works)
+let destNode;                 // for routing playback to an <audio> element (so setSinkId works)
 let playbackEl;
+let inputStream;              // ACTIVE INPUT (mic or display) so we can stop tracks cleanly
+
 let micSelect, speakerSelect, langSelect, startBtn, stopBtn, transcriptsDiv, vuCanvas, vuCtx;
 let sampleRateSelect, noiseSuppressionCheckbox, chunkSizeSelect, echoCancellationCheckbox, autoGainCheckbox;
+let sourceSelect, muteWhileDisplay;
 
 const WS_URL = `ws://${location.host}/ws/audio`;
 
 function uiSetRunning(running) {
   startBtn.disabled = running;
   stopBtn.disabled = !running;
-  micSelect.disabled = running;
+  micSelect.disabled = running || sourceSelect.value === 'display';
   langSelect.disabled = running;
+  sourceSelect.disabled = running;
 }
 
 async function ensureAudioPermission() {
   // Ask once so enumerateDevices returns labels
-  const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
-  tmp.getTracks().forEach(t => t.stop());
+  try {
+    const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
+    tmp.getTracks().forEach(t => t.stop());
+  } catch {
+    // ignore – user can still use display capture
+  }
 }
 
 async function listDevices() {
@@ -34,19 +42,19 @@ async function listDevices() {
 
   // Mic select
   micSelect.innerHTML = '';
-  mics.forEach(d => {
+  mics.forEach((d, i) => {
     const opt = document.createElement('option');
     opt.value = d.deviceId;
-    opt.textContent = d.label || `Mic ${micSelect.length + 1}`;
+    opt.textContent = d.label || `Mic ${i + 1}`;
     micSelect.appendChild(opt);
   });
 
   // Speaker select
   speakerSelect.innerHTML = '';
-  outs.forEach(d => {
+  outs.forEach((d, i) => {
     const opt = document.createElement('option');
     opt.value = d.deviceId;
-    opt.textContent = d.label || `Output ${speakerSelect.length + 1}`;
+    opt.textContent = d.label || `Output ${i + 1}`;
     speakerSelect.appendChild(opt);
   });
 }
@@ -55,6 +63,56 @@ function parseLangPair() {
   const pair = langSelect.value; // e.g. "ru-en" | "en-ru"
   const [src, tgt] = pair.split('-');
   return { src, tgt, pair };
+}
+
+function isDisplayCapture() {
+  return sourceSelect?.value === 'display';
+}
+
+async function getInputStream(selectedSampleRate, echoCancellationEnabled, noiseSuppressionEnabled, autoGainEnabled) {
+  if (!isDisplayCapture()) {
+    // Microphone
+    const constraints = {
+      audio: {
+        deviceId: micSelect.value ? { exact: micSelect.value } : undefined,
+        channelCount: 1,
+        sampleRate: selectedSampleRate,
+        echoCancellation: echoCancellationEnabled,
+        noiseSuppression: noiseSuppressionEnabled,
+        autoGainControl: autoGainEnabled
+      }
+    };
+    return navigator.mediaDevices.getUserMedia(constraints);
+  }
+
+  // Display (Tab / Window / Screen) with audio
+  if (!navigator.mediaDevices.getDisplayMedia) {
+    alert('Display capture with audio is not supported in this browser.');
+    throw new Error('getDisplayMedia unsupported');
+  }
+
+  const displayConstraints = {
+    video: true, // required by spec
+    audio: {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      // Chrome hint: reduce local playback of the captured tab to mitigate echo
+      suppressLocalAudioPlayback: true
+    }
+  };
+
+  const stream = await navigator.mediaDevices.getDisplayMedia(displayConstraints);
+
+  // If user didn’t enable sharing audio, there may be no audio tracks
+  if (!stream.getAudioTracks().length) {
+    alert('No audio captured. In the picker, choose a tab and enable "Share tab audio" (or "Share system audio" on Windows).');
+  }
+
+  // Auto-stop when user ends sharing via browser UI
+  stream.getTracks().forEach(t => t.addEventListener('ended', () => stop()));
+
+  return stream;
 }
 
 async function initAudio() {
@@ -68,19 +126,9 @@ async function initAudio() {
   audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: selectedSampleRate });
   await audioContext.audioWorklet.addModule('/static/worklets/encoder.worklet.js');
 
-  const constraints = {
-    audio: {
-      deviceId: micSelect.value ? { exact: micSelect.value } : undefined,
-      channelCount: 1,
-      sampleRate: selectedSampleRate,
-      echoCancellation: echoCancellationEnabled,
-      noiseSuppression: noiseSuppressionEnabled,
-      autoGainControl: autoGainEnabled
-    }
-  };
-  const stream = await navigator.mediaDevices.getUserMedia(constraints);
-
-  sourceNode = audioContext.createMediaStreamSource(stream);
+  // Acquire input
+  inputStream = await getInputStream(selectedSampleRate, echoCancellationEnabled, noiseSuppressionEnabled, autoGainEnabled);
+  sourceNode = audioContext.createMediaStreamSource(inputStream);
 
   // Encoder worklet (do NOT connect to destination → avoids echo)
   workletNode = new AudioWorkletNode(audioContext, 'encoder-worklet', {
@@ -121,13 +169,23 @@ function stopAudio() {
   try { sourceNode?.disconnect(); } catch {}
   try { workletNode?.disconnect(); } catch {}
   try { destNode?.disconnect(); } catch {}
-  if (audioContext) {
-    // Stop all tracks
-    const tracks = audioContext?.destination?.stream?.getTracks?.() || [];
-    tracks.forEach(t => t.stop());
-    audioContext.close();
+
+  // Stop input tracks (mic or display)
+  if (inputStream) {
+    try { inputStream.getTracks().forEach(t => t.stop()); } catch {}
   }
+
+  // Clear playback routing
+  if (playbackEl && playbackEl.srcObject) {
+    try { playbackEl.srcObject = null; } catch {}
+  }
+
+  if (audioContext) {
+    try { audioContext.close(); } catch {}
+  }
+
   analyser = sourceNode = workletNode = destNode = audioContext = null;
+  inputStream = null;
 }
 
 function connectWS() {
@@ -158,14 +216,8 @@ function connectWS() {
       }
     };
 
-    ws.onclose = () => {
-      // no-op; UI controls handle state
-      ws = null;
-    };
-
-    ws.onerror = (e) => {
-      reject(e);
-    };
+    ws.onclose = () => { ws = null; };
+    ws.onerror = (e) => { reject(e); };
   });
 }
 
@@ -178,6 +230,10 @@ function closeWS() {
 
 function playPcmInt16Mono16k(ab) {
   if (!audioContext) return;
+
+  // Avoid feedback if we capture this tab or screen and user asked to mute playback
+  if (isDisplayCapture() && muteWhileDisplay?.checked) return;
+
   const i16 = new Int16Array(ab);
   const f32 = new Float32Array(i16.length);
   for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
@@ -240,9 +296,10 @@ function stop() {
 }
 
 async function onMicChange() {
+  // Only meaningful when mic is the source
+  if (isDisplayCapture()) return;
   const running = !!audioContext;
   if (running) {
-    // Re-init audio path with new device; keep the same WS session
     stopAudio();
     await initAudio();
   }
@@ -268,6 +325,18 @@ window.addEventListener('DOMContentLoaded', async () => {
   echoCancellationCheckbox = document.getElementById('echoCancellationCheckbox');
   autoGainCheckbox = document.getElementById('autoGainCheckbox');
   chunkSizeSelect = document.getElementById('chunkSizeSelect');
+  sourceSelect = document.getElementById('sourceSelect');
+  muteWhileDisplay = document.getElementById('muteWhileDisplay');
+
+  sourceSelect.onchange = async () => {
+    const running = !!audioContext;
+    if (running) {
+      stopAudio();
+      await initAudio();        // re-init with new source
+    }
+    // Toggle mic dropdown usability
+    micSelect.disabled = sourceSelect.value === 'display';
+  };
 
   // Permissions + devices
   await ensureAudioPermission();

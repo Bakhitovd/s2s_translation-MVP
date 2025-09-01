@@ -11,6 +11,16 @@
   <div id="controls">
     <button id="startBtn">Start</button>
     <button id="stopBtn" disabled>Stop</button>
+    <!-- Add inside #controls, near the other selects -->
+    <label for="sourceSelect">Source:</label>
+    <select id="sourceSelect" title="Audio Source">
+      <option value="mic" selected>Microphone</option>
+      <option value="display">Tab / Window / Screen (share audio)</option>
+    </select>
+
+    <label for="muteWhileDisplay" style="margin-left:8px;">Mute playback while capturing</label>
+    <input type="checkbox" id="muteWhileDisplay" checked title="Avoid echo if you capture THIS tab">
+
     <select id="micSelect" title="Microphone"></select>
     <select id="speakerSelect" title="Output device"></select>
     <select id="langSelect" title="Direction">

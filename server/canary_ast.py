@@ -4,7 +4,7 @@ from typing import Any, Dict, Union
 import numpy as np
 import re
 from typing import Any
-
+import soundfile as sf
 
 log = logging.getLogger(__name__)
 # Strip Canary control tokens like <|en|><|pnc|> etc.
@@ -65,7 +65,7 @@ class ModelManager:
             raise RuntimeError("Canary AST model not loaded")
 
         if isinstance(audio_or_path, str):
-            import soundfile as sf
+
             audio_np, _ = sf.read(audio_or_path, dtype="float32")
         else:
             audio_np = audio_or_path
