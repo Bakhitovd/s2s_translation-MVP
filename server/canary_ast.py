@@ -42,14 +42,14 @@ def _to_clean_text(obj: Any) -> str:
     
 
 class InternalModelResult:
-    def __init__(self, text: str, segments=None, meta: Dict[str, Any] = None):
+    def __init__(self, text: str,segments=None, meta: Dict[str, Any] = None):
         self.text = text
         self.segments = segments or []
         self.meta = meta or {}
 
 
 class ModelManager:
-    """Minimal wrapper around NVIDIA Canary for speech → translation (AST)."""
+    """Minimal wrapper around NVIDIA Canary for speech → translation (AST) and ASR."""
 
     def __init__(self):
         self.model = None
@@ -65,7 +65,6 @@ class ModelManager:
             raise RuntimeError("Canary AST model not loaded")
 
         if isinstance(audio_or_path, str):
-
             audio_np, _ = sf.read(audio_or_path, dtype="float32")
         else:
             audio_np = audio_or_path
@@ -81,3 +80,24 @@ class ModelManager:
         text = _to_clean_text(raw)   # <— ALWAYS a str now
         return InternalModelResult(text=text, meta={"inference_ms": int((time.time() - t0) * 1000)})
 
+    def transcribe(self, audio_or_path, lang: str, timestamps: bool = False) -> InternalModelResult:
+        """ASR-only: returns transcript in source language (no translation)."""
+        if self.model is None:
+            raise RuntimeError("Canary AST model not loaded")
+
+        if isinstance(audio_or_path, str):
+            audio_np, _ = sf.read(audio_or_path, dtype="float32")
+        else:
+            audio_np = audio_or_path
+
+        t0 = time.time()
+        raw = self.model.transcribe(
+            [audio_np],
+            task="asr",               # ASR mode (no translation)
+            source_lang=lang,
+            target_lang=lang,
+            timestamps=timestamps,
+        )[0]
+        print(raw.score)
+        text = _to_clean_text(raw)
+        return InternalModelResult(text=text, meta={"inference_ms": int((time.time() - t0) * 1000)})

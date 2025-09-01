@@ -27,6 +27,11 @@
       <option value="ru-en">RU → EN</option>
       <option value="en-ru">EN → RU</option>
     </select>
+    <label for="modeSelect" style="margin-left:8px;">Mode:</label>
+    <select id="modeSelect" title="Pipeline Mode">
+      <option value="cascade" selected>ASR+MT</option>
+      <option value="ast">AST (direct)</option>
+    </select>
     <label for="sampleRateSelect" style="margin-left:8px;">Sample Rate:</label>
     <select id="sampleRateSelect" title="Sample Rate">
       <option value="16000" selected>16 kHz</option>

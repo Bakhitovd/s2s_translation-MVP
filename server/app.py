@@ -17,8 +17,22 @@ app = FastAPI()
 canary_mgr = None
 # Silero TTS manager (lazy global)
 tts_mgr = None
+# MT manager (lazy global)
+mt_mgr = None
 
 frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend")
+
+@app.on_event("startup")
+def preload_models():
+    global canary_mgr, tts_mgr, mt_mgr
+    from server.canary_ast import ModelManager
+    from server.silero_tts import TTSManager
+    from server.mt import mt_mgr as global_mt_mgr
+    canary_mgr = ModelManager()
+    canary_mgr.load()
+    tts_mgr = TTSManager(sample_rate=24000, device="cpu")
+    mt_mgr = global_mt_mgr
+    log.info("All models preloaded at startup.")
 
 @app.get("/")
 async def root():
@@ -41,6 +55,8 @@ async def websocket_audio_endpoint(websocket: WebSocket):
     utter_buf = bytearray()
     total_bytes = 0
     last_text = ""
+    pipeline_mode = "cascade"  # default
+
     try:
         SAMPLE_RATE = 16000
         BYTES_PER_SAMPLE = 2  # Int16LE
@@ -48,21 +64,35 @@ async def websocket_audio_endpoint(websocket: WebSocket):
         MAX_UTTER_BYTES = SAMPLE_RATE * BYTES_PER_SAMPLE * MAX_UTTER_SEC
 
         async def process_and_respond(pcm_bytes: bytes):
-            # Convert Int16LE PCM to float32 [-1,1]
             audio_np = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-            # Lazy-load Canary AST
-            global canary_mgr
-            if canary_mgr is None:
-                from server.canary_ast import ModelManager
-                canary_mgr = ModelManager()
-                canary_mgr.load()
-                log.info("Canary AST model loaded")
+            global canary_mgr, tts_mgr, mt_mgr
             src_lang = config.get("srcLang", "ru") if config else "ru"
             tgt_lang = config.get("dstLang", "en") if config else "en"
-            log.info("Calling Canary AST: src=%s tgt=%s audio=%.2fs", src_lang, tgt_lang, len(audio_np)/SAMPLE_RATE)
-            result = canary_mgr.translate(audio_np, src_lang, tgt_lang)
-            text = (result.text or "").strip()
-            log.info("Canary AST result: %r", text)
+            mode = pipeline_mode
+
+            # Cascade: ASR → MT → TTS
+            if mode == "cascade":
+                log.info("Pipeline: ASR+MT. src=%s tgt=%s audio=%.2fs", src_lang, tgt_lang, len(audio_np)/SAMPLE_RATE)
+                asr_result = canary_mgr.transcribe(audio_np, src_lang)
+                asr_text = (asr_result.text or "").strip()
+                log.info("Canary ASR result: %r", asr_result.__dict__)
+                await websocket.send_text(json.dumps({"type": "asr", "text": asr_text}))
+                # MT
+                try:
+                    mt_text = mt_mgr.translate_text(src_lang, tgt_lang, asr_text)
+                except Exception as e:
+                    log.error("MT error: %s", e)
+                    await websocket.send_text(json.dumps({"type": "error", "error": f"MT error: {e}"}))
+                    return asr_text
+                text = (mt_text or "").strip()
+                log.info("MT result: %r", text)
+            else:
+                # AST (direct speech-to-translation)
+                log.info("Pipeline: AST. src=%s tgt=%s audio=%.2fs", src_lang, tgt_lang, len(audio_np)/SAMPLE_RATE)
+                result = canary_mgr.translate(audio_np, src_lang, tgt_lang)
+                text = (result.text or "").strip()
+                log.info("Canary AST result: %r", text)
+
             # Duplicate/short-text suppression
             def _norm_words(s: str):
                 return [w for w in "".join(ch.lower() if ch.isalnum() or ch.isspace() else " " for ch in s).split() if w]
@@ -87,15 +117,12 @@ async def websocket_audio_endpoint(websocket: WebSocket):
             if suppressed:
                 return text
             # Run Silero TTS
-            global tts_mgr
-            if "tts_mgr" not in globals() or tts_mgr is None:
+            if tts_mgr is None:
                 from server.silero_tts import TTSManager
                 tts_mgr = TTSManager(sample_rate=24000, device="cpu")
                 log.info("Silero TTS manager loaded")
             tts_sr, tts_audio = tts_mgr.synth(text, tgt_lang)
-            # Resample to 16kHz mono float32
             tts_audio_16k = resample_float32(tts_audio, tts_sr, SAMPLE_RATE)
-            # Convert to Int16LE PCM
             tts_pcm = float32_to_int16le_bytes(tts_audio_16k)
             log.info("Sending TTS audio: %d bytes (%.2fs)", len(tts_pcm), len(tts_audio_16k)/SAMPLE_RATE)
             await websocket.send_bytes(tts_pcm)
@@ -112,7 +139,6 @@ async def websocket_audio_endpoint(websocket: WebSocket):
                 utter_buf.extend(chunk)
                 total_bytes += len(chunk)
                 log.debug("Received PCM chunk: %d bytes (total: %d)", len(chunk), total_bytes)
-                # Fallback: process if utterance grows too large
                 if len(utter_buf) >= MAX_UTTER_BYTES:
                     log.info("Max utterance reached: %d bytes, processing", len(utter_buf))
                     text_out = await process_and_respond(bytes(utter_buf))
@@ -124,6 +150,7 @@ async def websocket_audio_endpoint(websocket: WebSocket):
                     log.info("Received control message: %s", ctrl)
                     if ctrl.get("type") == "config":
                         config = ctrl
+                        pipeline_mode = ctrl.get("pipeline", "cascade")
                         log.info("Session config: %s", config)
                         await websocket.send_text(json.dumps({"type": "ack", "config": config}))
                     elif ctrl.get("type") == "flush":
@@ -134,7 +161,6 @@ async def websocket_audio_endpoint(websocket: WebSocket):
                             utter_buf.clear()
                         else:
                             log.info("Flush received with empty buffer; ignoring")
-                    # Handle other control types: pause, resume, etc.
                 except Exception as e:
                     log.error("Error parsing control message: %s", e)
                     await websocket.send_text(json.dumps({"type": "error", "error": str(e)}))

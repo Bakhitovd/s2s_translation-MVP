@@ -21,6 +21,10 @@ torchaudio==2.3.1
 # --- TTS ---
 silero-tts
 
+# --- MT (M2M100) ---
+transformers==4.43.3
+sentencepiece==0.2.0
+
 # --- NeMo (ASR) ---
 nemo_toolkit[asr]==2.4.0   # NeMo ASR; requires Python ≥3.10 & Torch ≥2.0; keep NumPy <2
 # Ref: NeMo install & prerequisites docs

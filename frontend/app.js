@@ -11,7 +11,7 @@ let destNode;                 // for routing playback to an <audio> element (so 
 let playbackEl;
 let inputStream;              // ACTIVE INPUT (mic or display) so we can stop tracks cleanly
 
-let micSelect, speakerSelect, langSelect, startBtn, stopBtn, transcriptsDiv, vuCanvas, vuCtx;
+let micSelect, speakerSelect, langSelect, modeSelect, startBtn, stopBtn, transcriptsDiv, vuCanvas, vuCtx;
 let sampleRateSelect, noiseSuppressionCheckbox, chunkSizeSelect, echoCancellationCheckbox, autoGainCheckbox;
 let sourceSelect, muteWhileDisplay;
 
@@ -63,6 +63,10 @@ function parseLangPair() {
   const pair = langSelect.value; // e.g. "ru-en" | "en-ru"
   const [src, tgt] = pair.split('-');
   return { src, tgt, pair };
+}
+
+function getPipelineMode() {
+  return modeSelect?.value || "cascade";
 }
 
 function isDisplayCapture() {
@@ -195,7 +199,8 @@ function connectWS() {
 
     ws.onopen = () => {
       const { src, tgt, pair } = parseLangPair();
-      ws.send(JSON.stringify({ type: 'config', srcLang: src, dstLang: tgt, langPair: pair }));
+      const pipeline = getPipelineMode();
+      ws.send(JSON.stringify({ type: 'config', srcLang: src, dstLang: tgt, langPair: pair, pipeline }));
       resolve();
     };
 
@@ -203,7 +208,14 @@ function connectWS() {
       if (typeof event.data === 'string') {
         try {
           const msg = JSON.parse(event.data);
-          if (msg.type === 'transcript') {
+          if (msg.type === 'asr') {
+            const p = document.createElement('p');
+            p.textContent = msg.text;
+            p.style.color = '#888';
+            p.style.fontStyle = 'italic';
+            transcriptsDiv.appendChild(p);
+            transcriptsDiv.scrollTop = transcriptsDiv.scrollHeight;
+          } else if (msg.type === 'transcript') {
             const p = document.createElement('p');
             p.textContent = msg.text;
             transcriptsDiv.appendChild(p);
@@ -315,6 +327,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   micSelect = document.getElementById('micSelect');
   speakerSelect = document.getElementById('speakerSelect');
   langSelect = document.getElementById('langSelect');
+  modeSelect = document.getElementById('modeSelect');
   startBtn = document.getElementById('startBtn');
   stopBtn = document.getElementById('stopBtn');
   playbackEl = document.getElementById('playback');
