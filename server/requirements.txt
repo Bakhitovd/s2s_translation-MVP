@@ -3,6 +3,7 @@ uvicorn[standard]==0.35.0
 websockets==15.0.1
 soundfile==0.13.1
 sounddevice
+pydub==0.25.1
 # Keep <2 due to NeMo ASR headaches with NumPy 2.x
 numpy<2
 scipy==1.14.1

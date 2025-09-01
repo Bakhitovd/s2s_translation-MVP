@@ -120,7 +120,7 @@ function connectWS() {
 
     ws.onopen = () => {
       const { src, tgt, pair } = parseLangPair();
-      ws.send(JSON.stringify({ type: 'start', src, tgt, pair }));
+      ws.send(JSON.stringify({ type: 'config', srcLang: src, dstLang: tgt, langPair: pair }));
       resolve();
     };
 
